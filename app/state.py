@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import re
+from typing import List, Optional
+
+from .catalog import CatalogItem
+from .retrieval import SearchFilters
+from .schema import ConversationState, Message
+
+_JOB_LEVEL_MAP = {
+    r"\b(graduate|graduate[- ]level|graduate trainee|recent graduate|recent graduates|entry|entry[- ]level|junior)\b": "Entry-Level",
+    r"\b(mid|mid[- ]level|mid[- ]professional|professional|staff)\b": "Mid-Professional",
+    r"\b(senior|senior[- ]ic|lead|leadership)\b": "Manager",
+    r"\b(manager|management)\b": "Manager",
+    r"\b(director|senior director)\b": "Director",
+    r"\b(executive|vp|vice president|chief|c-level)\b": "Executive",
+}
+
+_PURPOSE_PATTERNS = {
+    r"\b(selection|selecting|select)\b": "selection",
+    r"\b(hire|hiring|screening|recruitment|candidate|candidates)\b": "selection",
+    r"\b(development|developmental|training|growth|upskill|coaching|talent development|re[- ]skill|reskill)\b": "development",
+}
+
+_LANGUAGE_MAP = {
+    r"\benglish\b": "English",
+    r"\bspanish\b": "Spanish",
+    r"\bfrench\b": "French",
+    r"\bgerman\b": "German",
+    r"\bchinese\b|\bmandarin\b": "Chinese",
+}
+
+_ASSESSMENT_TYPE_MAP = {
+    r"\b(personality|behaviour|behavior|behavioural)\b": "Personality",
+    r"\b(cognitive|ability|aptitude|numerical|verbal|logical)\b": "Cognitive",
+    r"\b(technical|skills|knowledge|competency|competencies)\b": "Knowledge",
+    r"\b(simulation|situational judgment|situational|SJ|role play)\b": "Simulation",
+    r"\b(biodata|situational judgment|SJ)\b": "Biodata",
+    r"\b(development|360|feedback)\b": "Development",
+}
+
+_REMOTE_MAP = {
+    r"\b(remote|virtual|work from home|distributed)\b": "Remote",
+    r"\b(onsite|on[- ]site|office|in[- ]office)\b": "On-site",
+    r"\b(hybrid)\b": "Hybrid",
+}
+
+_SKILL_PATTERNS = [
+    r"\b(java|spring|sql|aws|docker|linux|networking|rust|python|c\+\+|c#|javascript|typescript|excel|word)\b",
+    r"\b(sales|customer service|customer success|stakeholder|leadership|management|finance|accounting|statistics|healthcare|hipaa|safety|dependability)\b",
+    r"\b(communication|analytical|problem solving|problem-solving|data analysis)\b",
+]
+
+_INDUSTRY_PATTERNS = [
+    r"\b(retail|finance|healthcare|technology|it|manufacturing|contact centre|customer service)\b",
+]
+
+_COMPARISON_KEYWORDS = [r"\bcompare\b", r"\bdifference\b", r"\bversus\b", r"\b vs\b", r"\bbetween\b"]
+
+_DURATION_REGEX = re.compile(r"(\d{1,3})\s*(?:minutes|minute|mins|min)\b")
+
+_TARGET_PAIR_REGEX = re.compile(r"compare\s+(.+?)\s+(?:and|vs|versus)\s+(.+?)(?:\?|\.|$)", re.IGNORECASE)
+
+_ROLE_SCRAPE_PATTERNS = [
+    re.compile(r"\b(?:hiring|screening|recruiting|seeking|looking for|searching for|want|need|find)\s+(?:for\s+)?(?:an?\s+)?([^.;,:]+)", re.IGNORECASE),
+    re.compile(r"\bfor\s+(?:an?\s+)?([^.;,:]+)", re.IGNORECASE),
+]
+
+
+def _first_match(text: str, pattern_map: dict[str, str]) -> Optional[str]:
+    for pattern, label in pattern_map.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return label
+    return None
+
+
+def _collect_matches(text: str, patterns: List[str]) -> List[str]:
+    values: List[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            value = match.group(0).strip()
+            if value not in values:
+                values.append(value)
+    return values
+
+
+def _safe_normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _extract_role(text: str) -> Optional[str]:
+    for pattern in _ROLE_SCRAPE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            role = match.group(1).strip()
+            role = re.sub(r"^\d+(?:\s*-\s*\d+)?\s*", "", role)
+            role = re.sub(r"\b(?:a|an|the|our|this|these|those|new)\b", "", role, flags=re.IGNORECASE)
+            role = re.sub(r"\b(?:solution|solutions|battery|batteries|assessment|assessments|test|tests|role|roles|candidate|candidates|people|staff|pool)\b", "", role, flags=re.IGNORECASE)
+            role = re.sub(r"\s+", " ", role).strip(" ,.;:-")
+            role = re.sub(r"^(?:for|to|of)\s+", "", role, flags=re.IGNORECASE)
+            if len(role) > 3:
+                return role
+    return None
+
+
+def _extract_comparison_targets(text: str) -> List[str]:
+    match = _TARGET_PAIR_REGEX.search(text)
+    if match:
+        return [match.group(1).strip(), match.group(2).strip()]
+    return []
+
+
+def _extract_duration(text: str) -> Optional[int]:
+    match = _DURATION_REGEX.search(text)
+    if match:
+        return int(match.group(1))
+    if re.search(r"\b(short|quick|brief|under \d{1,3} minutes)\b", text, re.IGNORECASE):
+        return 30
+    return None
+
+
+def _extract_language(text: str) -> Optional[str]:
+    for pattern, label in _LANGUAGE_MAP.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return label
+    return None
+
+
+def _extract_assessment_types(text: str) -> List[str]:
+    values: List[str] = []
+    for pattern, label in _ASSESSMENT_TYPE_MAP.items():
+        if re.search(pattern, text, re.IGNORECASE) and label not in values:
+            values.append(label)
+    return values
+
+
+def _extract_skills(text: str) -> List[str]:
+    skills: List[str] = []
+    for pattern in _SKILL_PATTERNS:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            normalized = match.group(0).strip().lower()
+            if normalized not in skills:
+                skills.append(normalized)
+    return skills
+
+
+def _extract_industry(text: str) -> Optional[str]:
+    for pattern in _INDUSTRY_PATTERNS:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(0).strip().title()
+    return None
+
+
+def _extract_purpose(text: str) -> Optional[str]:
+    for pattern, value in _PURPOSE_PATTERNS.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return value
+    return None
+
+
+def _extract_remote_on_site(text: str) -> Optional[str]:
+    for pattern, value in _REMOTE_MAP.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return value
+    return None
+
+
+def _extract_candidate_volume(text: str) -> Optional[str]:
+    match = re.search(r"\b(one candidate|two candidates|three candidates|batch|team|multiple candidates|volume)\b", text, re.IGNORECASE)
+    return match.group(0).strip() if match else None
+
+
+def build_state(messages: List[Message]) -> ConversationState:
+    user_text = " ".join(m.content for m in messages if m.role == "user")
+    return ConversationState(
+        role=_extract_role(user_text),
+        industry=_extract_industry(user_text),
+        experience=None,
+        job_level=_first_match(user_text, _JOB_LEVEL_MAP),
+        assessment_types=_extract_assessment_types(user_text),
+        technical_skills=_extract_skills(user_text),
+        personality_requirement=None,
+        cognitive_requirement=None,
+        language=_extract_language(user_text),
+        duration_minutes=_extract_duration(user_text),
+        remote_on_site=_extract_remote_on_site(user_text),
+        candidate_volume=_extract_candidate_volume(user_text),
+        purpose=_extract_purpose(user_text),
+        comparison_request=any(re.search(pattern, user_text, re.IGNORECASE) for pattern in _COMPARISON_KEYWORDS),
+        comparison_targets=_extract_comparison_targets(user_text),
+        clarification_needed=False,
+        clarification_prompt=None,
+    )
+
+
+def build_search_query(state: ConversationState, messages: List[Message]) -> str:
+    pieces: List[str] = []
+    if state.role:
+        pieces.append(state.role)
+    if state.job_level:
+        pieces.append(state.job_level)
+    if state.industry:
+        pieces.append(state.industry)
+    if state.assessment_types:
+        pieces.extend(state.assessment_types)
+    if state.technical_skills:
+        pieces.extend(state.technical_skills)
+    if state.purpose:
+        pieces.append(state.purpose)
+    if state.language:
+        pieces.append(state.language)
+    if state.remote_on_site:
+        pieces.append(state.remote_on_site)
+    if not pieces:
+        pieces.append(" ".join(m.content for m in messages if m.role == "user"))
+    return " ".join(pieces)
