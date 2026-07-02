@@ -28,12 +28,15 @@ class ConversationState(BaseModel):
     personality_requirement: Optional[str] = None
     cognitive_requirement: Optional[str] = None
     language: Optional[str] = None
+    accent: Optional[str] = None
     duration_minutes: Optional[int] = None
     remote_on_site: Optional[str] = None
     candidate_volume: Optional[str] = None
     purpose: Optional[str] = None
     comparison_request: bool = False
     comparison_targets: List[str] = Field(default_factory=list)
+    explicit_remove: List[str] = Field(default_factory=list)
+    explicit_final_list: List[str] = Field(default_factory=list)
     clarification_needed: bool = False
     clarification_prompt: Optional[str] = None
 
@@ -47,6 +50,9 @@ class Recommendation(BaseModel):
     name: str
     url: HttpUrl
     test_type: str
+    keys: List[str] = Field(default_factory=list)
+    duration: Optional[str] = None
+    languages: List[str] = Field(default_factory=list)
     reason: str
     confidence: Literal["high", "medium", "low"]
     matched_constraints: List[str] = Field(default_factory=list)

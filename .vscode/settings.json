@@ -1,0 +1,4 @@
+{
+    // Enable loading environment variables from .env in integrated terminals
+    "python.terminal.useEnvFile": true
+}

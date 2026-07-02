@@ -1,0 +1,133 @@
+﻿..........F.F...                                                         [100%]
+================================== FAILURES ===================================
+___________ test_agent_can_answer_assessment_questions_from_catalog ___________
+
+    def test_agent_can_answer_assessment_questions_from_catalog():
+        items = load_catalog(SAMPLE_CATALOG_PATH)
+        index = CatalogIndex(items)
+        agent = Agent(index, llm=LLMClient())
+    
+>       response = agent.handle([Message(role="user", content="What is OPQ32r?")])
+
+tests\test_catalog_and_retrieval.py:108: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app\agent.py:130: in handle
+    return self._handle_assessment_knowledge(state, messages)
+app\agent.py:192: in _handle_assessment_knowledge
+    recommendations = [self._build_catalog_recommendation(item)]
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <app.agent.Agent object at 0x000001A802069160>
+item = CatalogItem(entity_id='720', name='Occupational Personality Questionnaire OPQ32r', url='https://www.shl.com/products/p...daptive=False, description='Personality questionnaire for selection and development.', keys=['Personality & Behavior'])
+
+    def _build_catalog_recommendation(self, item: CatalogItem) -> Recommendation:
+>       return Recommendation(
+            entity_id=item.entity_id,
+            name=item.name,
+            url=item.url,
+            test_type=item.test_type_str,
+            keys=", ".join(item.keys) if item.keys else "Not listed",
+            duration=item.duration_raw or "Not listed",
+            languages=", ".join(item.languages[:3]) + (" (+ more)" if len(item.languages) > 3 else "") if item.languages else "Not listed",
+            reason="Catalog-grounded assessment detail from the SHL catalog.",
+            confidence="high",
+            matched_constraints=["catalog metadata"],
+            matched_skills=[],
+        )
+E       pydantic_core._pydantic_core.ValidationError: 2 validation errors for Recommendation
+E       keys
+E         Input should be a valid list [type=list_type, input_value='Personality & Behavior', input_type=str]
+E           For further information visit https://errors.pydantic.dev/2.13/v/list_type
+E       languages
+E         Input should be a valid list [type=list_type, input_value='English', input_type=str]
+E           For further information visit https://errors.pydantic.dev/2.13/v/list_type
+
+app\agent.py:303: ValidationError
+_ test_agent_does_not_ask_redundant_followup_when_role_and_purpose_are_already_present _
+
+    def test_agent_does_not_ask_redundant_followup_when_role_and_purpose_are_already_present():
+        items = load_catalog(SAMPLE_CATALOG_PATH)
+        index = CatalogIndex(items)
+        agent = Agent(index, llm=LLMClient())
+    
+>       response = agent.handle([Message(role="user", content="We need a selection battery for senior leadership.")])
+
+tests\test_catalog_and_retrieval.py:131: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app\agent.py:139: in handle
+    return self._handle_recommendation(state, messages)
+app\agent.py:339: in _handle_recommendation
+    recommendations = [self._build_recommendation(item, state) for item in ranked[:MAX_RECOMMENDATIONS]]
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <app.agent.Agent object at 0x000001A8020C8190>
+item = CatalogItem(entity_id='720', name='Occupational Personality Questionnaire OPQ32r', url='https://www.shl.com/products/p...daptive=False, description='Personality questionnaire for selection and development.', keys=['Personality & Behavior'])
+state = ConversationState(role='selection for senior leadership', industry=None, experience=None, job_level='Manager', assessm...se='selection', comparison_request=False, comparison_targets=[], clarification_needed=False, clarification_prompt=None)
+
+    def _build_recommendation(self, item: CatalogItem, state: ConversationState) -> Recommendation:
+        matched_constraints = []
+        if state.job_level and state.job_level in item.job_levels:
+            matched_constraints.append("job_level")
+        if state.language and any(state.language.lower() in lang.lower() for lang in item.languages):
+            matched_constraints.append("language")
+        if state.accent and any(state.accent.lower() in lang.lower() for lang in item.languages):
+            matched_constraints.append("accent")
+        if state.duration_minutes is not None and item.duration_minutes is not None and item.duration_minutes <= state.duration_minutes:
+            matched_constraints.append("duration")
+        if state.purpose:
+            matched_constraints.append("purpose")
+        if state.assessment_types and set(self._map_assessment_types(state.assessment_types) or []).intersection(item.test_type_codes):
+            matched_constraints.append("test_type")
+    
+        matched_skills = [skill for skill in state.technical_skills if skill in item.searchable_text().lower()]
+        if matched_skills:
+            matched_constraints.append("skills")
+        if not matched_constraints:
+            matched_constraints.append("catalog fit")
+    
+        reason_parts: List[str] = []
+        if state.role:
+            reason_parts.append(f"Relevant for {state.role}")
+        if state.job_level:
+            reason_parts.append(f"appropriate for {state.job_level} level")
+        if state.purpose:
+            reason_parts.append(f"supports {state.purpose}")
+        if state.language:
+            reason_parts.append(f"available in {state.language}")
+        if state.accent:
+            reason_parts.append(f"matches accent preference {state.accent}")
+        if item.duration_raw:
+            reason_parts.append(f"fits duration {item.duration_raw}")
+        if matched_skills:
+            reason_parts.append(f"aligned to skills: {', '.join(matched_skills)}")
+        reason = ", ".join(reason_parts) if reason_parts else "Matches the user's requested assessment criteria."
+    
+        confidence = "high" if len(matched_constraints) >= 2 else "medium"
+>       return Recommendation(
+            entity_id=item.entity_id,
+            name=item.name,
+            url=item.url,
+            test_type=item.test_type_str,
+            keys=", ".join(item.keys) if item.keys else "Not listed",
+            duration=item.duration_raw or "Not listed",
+            languages=", ".join(item.languages[:3]) + (" (+ more)" if len(item.languages) > 3 else "") if item.languages else "Not listed",
+            reason=reason,
+            confidence=confidence,
+            matched_constraints=matched_constraints,
+            matched_skills=matched_skills,
+        )
+E       pydantic_core._pydantic_core.ValidationError: 2 validation errors for Recommendation
+E       keys
+E         Input should be a valid list [type=list_type, input_value='Personality & Behavior', input_type=str]
+E           For further information visit https://errors.pydantic.dev/2.13/v/list_type
+E       languages
+E         Input should be a valid list [type=list_type, input_value='English', input_type=str]
+E           For further information visit https://errors.pydantic.dev/2.13/v/list_type
+
+app\agent.py:436: ValidationError
+------------------------------ Captured log call ------------------------------
+WARNING  shl-agent:agent.py:394 LLM rerank failed: 404 Client Error: Not Found for url: https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AQ.Ab8RN6IF-31ffpcyJlGcKwMsnEMh0EXJgJfghvcGMFhWdxKxRw
+=========================== short test summary info ===========================
+FAILED tests/test_catalog_and_retrieval.py::test_agent_can_answer_assessment_questions_from_catalog
+FAILED tests/test_catalog_and_retrieval.py::test_agent_does_not_ask_redundant_followup_when_role_and_purpose_are_already_present
+2 failed, 14 passed in 1.43s

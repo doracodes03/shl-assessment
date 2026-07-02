@@ -35,6 +35,13 @@ def test_search_returns_relevant_java_items():
     assert any("Java" in n for n in top_names)
 
 
+def test_search_uses_query_normalization_for_hiring_phrases():
+    from app.retrieval import _normalize_query
+
+    assert _normalize_query("Hiring for data science") == "data science"
+    assert _normalize_query("We need a selection battery") == "a selection battery"
+
+
 def test_search_duration_filter_excludes_long_items():
     items = load_catalog(SAMPLE_CATALOG_PATH)
     index = CatalogIndex(items)
@@ -136,3 +143,56 @@ def test_agent_handles_assessment_followup_questions_without_clarification():
 
     assert response.recommendations is None
     assert "could not find" in response.reply.lower()
+
+
+def test_build_search_query_uses_role_instead_of_generic_purpose():
+    from app.state import build_search_query, build_state
+
+    messages = [Message(role="user", content="Hiring for data science")]
+    state = build_state(messages)
+
+    assert state.role == "data science"
+    assert state.purpose == "selection"
+    assert build_search_query(state, messages) == "data science"
+
+
+def test_build_search_query_falls_back_to_purpose_when_no_role_or_skills():
+    from app.state import build_search_query, build_state
+
+    messages = [Message(role="user", content="I need a selection battery")]
+    state = build_state(messages)
+
+    assert state.role is None
+    assert state.purpose == "selection"
+    assert build_search_query(state, messages) == "selection"
+
+
+def test_build_state_extracts_explicit_final_list_and_remove_requests():
+    from app.state import build_state
+
+    messages = [
+        Message(role="user", content="Drop the OPQ. Final list: Verify G+ and Graduate Scenarios."),
+    ]
+    state = build_state(messages)
+
+    assert state.explicit_remove == ["OPQ"]
+    assert state.explicit_final_list == ["Verify G+", "Graduate Scenarios"]
+
+
+def test_agent_updates_recommendations_for_explicit_final_shortlist():
+    items = load_catalog(SHL_PRODUCT_CATALOG_PATH)
+    index = CatalogIndex(items)
+    agent = Agent(index, llm=LLMClient())
+
+    messages = [
+        Message(role="user", content="We need a selection battery for graduate recruitment."),
+        Message(role="user", content="Drop the OPQ. Final list: Verify G+ and Graduate Scenarios."),
+    ]
+    response = agent.handle(messages)
+
+    assert response.recommendations is not None
+    names = [rec.name for rec in response.recommendations]
+    assert any("Verify G+" in name for name in names)
+    assert any("Graduate Scenarios" in name for name in names)
+    assert all("OPQ" not in name for name in names)
+    assert "final shortlist" in response.reply.lower() or "updated the shortlist" in response.reply.lower()

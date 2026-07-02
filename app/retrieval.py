@@ -23,13 +23,91 @@ except Exception:  # pragma: no cover - fallback for environments without the mo
 from .catalog import CatalogItem
 
 _TOKEN_RE = re.compile(r"[a-z0-9+#.]+")
+_NORMALIZE_QUERY_RE = re.compile(
+    r"\b(?:hiring|looking for|looking to hire|need|need to hire|searching for|seeking|we need|we're looking for|we are looking for)(?:\s+for)?\b",
+    re.IGNORECASE,
+)
+_STOP_WORDS = {
+    "for",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "by",
+    "with",
+    "from",
+    "into",
+    "as",
+    "that",
+    "this",
+    "these",
+    "those",
+    "your",
+    "our",
+    "you",
+    "we",
+}
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-BM25_WEIGHT = 0.55
-SEMANTIC_WEIGHT = 0.45
+BM25_WEIGHT = 0.30
+SEMANTIC_WEIGHT = 0.70
 
 
 def _tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall(text.lower())
+
+
+def _normalize_query(query: str) -> str:
+    if not query:
+        return ""
+    cleaned = _NORMALIZE_QUERY_RE.sub("", query)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_query_phrases(query: str) -> List[str]:
+    tokens = _tokenize(query)
+    phrases: List[str] = []
+    for n in (3, 2):
+        for i in range(len(tokens) - n + 1):
+            window = tokens[i : i + n]
+            if any(tok not in _STOP_WORDS for tok in window):
+                phrase = " ".join(window)
+                phrases.append(phrase)
+    return phrases
+
+
+def _business_rule_boost(item: "CatalogItem", query: str, query_phrases: List[str]) -> float:
+    lower_query = query.lower()
+    searchable_text = item.searchable_text().lower()
+    boost = 0.0
+
+    title = item.name.lower()
+    if title == lower_query or title in lower_query or lower_query in title:
+        boost += 20.0
+
+    for phrase in query_phrases:
+        if phrase in title or phrase in searchable_text:
+            boost += 15.0
+            break
+
+    for level in item.job_levels:
+        normalized_level = level.lower()
+        if normalized_level and (normalized_level in lower_query or lower_query in normalized_level):
+            boost += 10.0
+            break
+
+    for key in item.keys:
+        normalized_key = key.lower()
+        if normalized_key and normalized_key in lower_query:
+            boost += 10.0
+            break
+
+    return boost
 
 
 def _normalize_scores(scores: Sequence[float]) -> List[float]:
@@ -96,7 +174,9 @@ class CatalogIndex:
         if not self.items:
             return []
 
+        query = _normalize_query(query)
         query_tokens = _tokenize(query) if query else []
+        query_phrases = _extract_query_phrases(query)
         lexical_scores = self._bm25.get_scores(query_tokens) if query_tokens and self._bm25 else [0.0] * len(self.items)
         semantic_scores = self._semantic_scores(query)
 
@@ -109,7 +189,8 @@ class CatalogIndex:
             item = self.items[idx]
             if filters and not self._passes_filters(item, filters):
                 continue
-            score = BM25_WEIGHT * lexical_norm[idx] + SEMANTIC_WEIGHT * semantic_norm[idx]
+            fused_score = BM25_WEIGHT * lexical_norm[idx] + SEMANTIC_WEIGHT * semantic_norm[idx]
+            score = 100.0 * fused_score + _business_rule_boost(item, query, query_phrases)
             results.append(SearchResult(item=item, score=score))
 
         results.sort(key=lambda r: r.score, reverse=True)

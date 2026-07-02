@@ -19,7 +19,7 @@ from pathlib import Path
 import requests
 
 DEFAULT_URL = "https://tcp-us-prod-rnd.shl.com/voiceRater/shl-ai-hiring/shl_product_catalog.json"
-DEFAULT_OUT = Path(__file__).resolve().parent.parent / "data" / "catalog.json"
+DEFAULT_OUT = Path(__file__).resolve().parent.parent / "data" / "shl_product_catalog.json"
 
 
 def main() -> int:
@@ -31,17 +31,24 @@ def main() -> int:
     print(f"Fetching catalog from {args.url} ...", file=sys.stderr)
     resp = requests.get(args.url, timeout=60)
     resp.raise_for_status()
-    items = resp.json()
 
-    if not isinstance(items, list) or not items:
-        print("ERROR: fetched payload doesn't look like a non-empty list", file=sys.stderr)
-        return 1
+    # Some exported SHL catalog files contain control characters inside
+    # string values which cause `response.json()` to raise. Save the raw
+    # text and let the catalog loader (`app.catalog`) sanitize on read.
+    raw_text = resp.text
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+        f.write(raw_text)
 
-    print(f"Wrote {len(items)} raw catalog items to {args.out}", file=sys.stderr)
+    # Attempt to estimate number of top-level items for informational output
+    try:
+        items = json.loads(raw_text)
+        count = len(items) if isinstance(items, list) else 0
+    except Exception:
+        count = 0
+
+    print(f"Wrote raw catalog to {args.out} (items_estimate={count})", file=sys.stderr)
     return 0
 
 

@@ -55,6 +55,47 @@ KNOWLEDGE_QUERY_PATTERNS = [
     r"\bhow\s+(?:is|does)\b",
 ]
 
+_STOPWORD_TOKENS = {
+    "what",
+    "which",
+    "where",
+    "when",
+    "why",
+    "how",
+    "is",
+    "are",
+    "the",
+    "a",
+    "an",
+    "for",
+    "to",
+    "of",
+    "on",
+    "in",
+    "and",
+    "or",
+    "by",
+    "with",
+    "from",
+    "that",
+    "this",
+    "these",
+    "those",
+    "role",
+    "roles",
+    "assessment",
+    "assessments",
+    "test",
+    "tests",
+    "candidate",
+    "candidates",
+    "selection",
+    "hiring",
+    "recruitment",
+    "development",
+    "training",
+}
+
 
 class Agent:
     def __init__(self, index: CatalogIndex, llm: LLMClient):
@@ -156,12 +197,42 @@ class Agent:
         if not raw_query:
             return []
 
+        query_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9+#.]+", raw_query.lower())
+            if len(token) > 2 and token not in _STOPWORD_TOKENS
+        }
+
+        direct_matches = self.index.find_by_name(raw_query)
+        if direct_matches:
+            return direct_matches[:top_k]
+
+        exact_matches = []
+        for item in self.index.items:
+            item_tokens = {
+                token
+                for token in re.findall(r"[a-z0-9+#.]+", item.name.lower())
+                if len(token) > 2 and token not in _STOPWORD_TOKENS
+            }
+            if query_tokens and query_tokens.issubset(item_tokens):
+                exact_matches.append(item)
+                continue
+            if raw_query.lower() in item.name.lower() or item.name.lower() in raw_query.lower():
+                exact_matches.append(item)
+
+        if exact_matches:
+            # Prefer exact text matches and preserve the item order.
+            return exact_matches[:top_k]
+
         search_results = self.index.search(raw_query, top_k=max(top_k, 8))
         scored_items: List[tuple[int, CatalogItem]] = []
-        query_tokens = {token for token in re.findall(r"[a-z0-9+#.]+", raw_query.lower()) if len(token) > 2}
         for result in search_results:
             item = result.item
-            name_tokens = {token for token in re.findall(r"[a-z0-9+#.]+", item.name.lower()) if len(token) > 2}
+            name_tokens = {
+                token
+                for token in re.findall(r"[a-z0-9+#.]+", item.name.lower())
+                if len(token) > 2 and token not in _STOPWORD_TOKENS
+            }
             overlap = len(query_tokens.intersection(name_tokens))
             exact_name_match = raw_query.lower() in item.name.lower() or item.name.lower() in raw_query.lower()
             if overlap > 0 or exact_name_match:
@@ -170,7 +241,14 @@ class Agent:
         if not scored_items:
             return []
 
-        scored_items.sort(key=lambda entry: (-entry[0], -self.index.search(entry[1].name, top_k=1)[0].score if self.index.search(entry[1].name, top_k=1) else 0))
+        scored_items.sort(
+            key=lambda entry: (
+                -entry[0],
+                -self.index.search(entry[1].name, top_k=1)[0].score
+                if self.index.search(entry[1].name, top_k=1)
+                else 0,
+            )
+        )
         seen: set[str] = set()
         matched: List[CatalogItem] = []
         for _, item in scored_items:
@@ -188,6 +266,8 @@ class Agent:
         keys = ", ".join(item.keys) if item.keys else "not listed"
         duration = item.duration_raw or ("%s minutes" % item.duration_minutes if item.duration_minutes is not None else "not listed")
         link = item.url or "No catalog URL was available."
+        assessed_areas = keys if keys != "not listed" else "not listed"
+
         return (
             f"I found {item.name} in the SHL catalog.\n\n"
             f"Catalog facts:\n"
@@ -196,7 +276,11 @@ class Agent:
             f"- Duration: {duration}\n"
             f"- Languages: {languages}\n"
             f"- Description: {description}\n"
-            f"- Link: {link}"
+            f"- Link: {link}\n\n"
+            f"What this assessment evaluates:\n"
+            f"- Focus areas: {assessed_areas}\n"
+            f"- It is designed to help identify candidates' strengths and fit for roles that require {assessed_areas.lower()} based on the catalog metadata.\n"
+            f"- Use it when you want grounded insight from the SHL catalog into candidate capabilities and behavioral style."
         )
 
     def _format_assessment_comparison(self, items: List[CatalogItem]) -> str:
@@ -221,6 +305,9 @@ class Agent:
             name=item.name,
             url=item.url,
             test_type=item.test_type_str,
+            keys=item.keys or [],
+            duration=item.duration_raw or "Not listed",
+            languages=item.languages or [],
             reason="Catalog-grounded assessment detail from the SHL catalog.",
             confidence="high",
             matched_constraints=["catalog metadata"],
@@ -228,6 +315,25 @@ class Agent:
         )
 
     def _handle_recommendation(self, state: ConversationState, messages: List[Message]) -> ChatResponse:
+        if state.explicit_final_list:
+            explicit_items = self._resolve_explicit_items(state.explicit_final_list)
+            if explicit_items:
+                recommendations = [self._build_recommendation(item, state) for item in explicit_items[:MAX_RECOMMENDATIONS]]
+                return ChatResponse(
+                    reply=self._format_explicit_final_reply(state, recommendations, state.explicit_final_list),
+                    recommendations=recommendations,
+                    state=state,
+                    end_of_conversation=True,
+                )
+            return ChatResponse(
+                reply=(
+                    "I understood that you wanted a final shortlist, but I couldn't match one or more of the requested catalog names exactly. "
+                    "Please provide the exact assessment names or product titles so I can update the shortlist correctly."
+                ),
+                state=state,
+                end_of_conversation=False,
+            )
+
         query = build_search_query(state, messages)
         filters = SearchFilters(
             job_level=state.job_level,
@@ -248,6 +354,11 @@ class Agent:
             )
 
         candidate_items = [result.item for result in candidates]
+        if state.explicit_remove:
+            removed_items = self._resolve_explicit_items(state.explicit_remove)
+            removed_ids = {item.entity_id for item in removed_items}
+            candidate_items = [item for item in candidate_items if item.entity_id not in removed_ids]
+
         ranked = self._rerank_candidates(candidate_items, state)
         recommendations = [self._build_recommendation(item, state) for item in ranked[:MAX_RECOMMENDATIONS]]
 
@@ -255,11 +366,15 @@ class Agent:
             logger.warning("Recommendation validation failed; falling back to filtered candidates.")
             recommendations = [self._build_recommendation(item, state) for item in candidate_items[:MAX_RECOMMENDATIONS]]
 
+        reply = self._format_recommendation_reply(state, recommendations)
+        if state.explicit_remove and removed_items:
+            reply = self._format_replacement_reply(state, removed_items, recommendations)
+
         return ChatResponse(
-            reply=self._format_recommendation_reply(state, recommendations),
+            reply=reply,
             recommendations=recommendations,
             state=state,
-            end_of_conversation=True,
+            end_of_conversation=bool(state.explicit_remove),
         )
 
     def _resolve_comparison_items(self, targets: List[str]) -> List[CatalogItem]:
@@ -273,6 +388,49 @@ class Agent:
             if matches:
                 items.append(matches[0])
         return items
+
+    def _resolve_explicit_items(self, names: List[str]) -> List[CatalogItem]:
+        items: List[CatalogItem] = []
+        seen: set[str] = set()
+        for name in names:
+            normalized = name.lower().strip()
+            if not normalized:
+                continue
+            item = self.index.get_by_id(normalized)
+            if item and item.entity_id not in seen:
+                items.append(item)
+                seen.add(item.entity_id)
+                continue
+            matches = self.index.find_by_name(name)
+            if matches:
+                for match in matches:
+                    if match.entity_id not in seen:
+                        items.append(match)
+                        seen.add(match.entity_id)
+                        break
+                continue
+            search_results = self.index.search(name, top_k=3)
+            for result in search_results:
+                if result.item.entity_id not in seen:
+                    items.append(result.item)
+                    seen.add(result.item.entity_id)
+                    break
+        return items
+
+    def _format_explicit_final_reply(self, state: ConversationState, recommendations: List[Recommendation], final_list: List[str]) -> str:
+        requested = ", ".join(final_list)
+        return (
+            f"Confirmed. I have updated the shortlist to your final requested list: {requested}. "
+            f"It is now aligned to your selected core assessments and avoids the previously suggested personality assessment."
+        )
+
+    def _format_replacement_reply(self, state: ConversationState, removed_items: List[CatalogItem], recommendations: List[Recommendation]) -> str:
+        removed_names = ", ".join(item.name for item in removed_items)
+        replaced_with = ", ".join(rec.name for rec in recommendations[:2])
+        return (
+            f"I removed {removed_names} as requested. "
+            f"The updated shortlist still covers your core needs; I kept {replaced_with} because they offer cognitive and situational judgement coverage for an entry-level graduate programme."
+        )
 
     def _map_assessment_types(self, assessment_types: List[str]) -> Optional[List[str]]:
         codes = [CATEGORY_TO_CODE.get(at) for at in assessment_types if CATEGORY_TO_CODE.get(at)]
@@ -313,6 +471,8 @@ class Agent:
             matched_constraints.append("job_level")
         if state.language and any(state.language.lower() in lang.lower() for lang in item.languages):
             matched_constraints.append("language")
+        if state.accent and any(state.accent.lower() in lang.lower() for lang in item.languages):
+            matched_constraints.append("accent")
         if state.duration_minutes is not None and item.duration_minutes is not None and item.duration_minutes <= state.duration_minutes:
             matched_constraints.append("duration")
         if state.purpose:
@@ -321,6 +481,8 @@ class Agent:
             matched_constraints.append("test_type")
 
         matched_skills = [skill for skill in state.technical_skills if skill in item.searchable_text().lower()]
+        if matched_skills:
+            matched_constraints.append("skills")
         if not matched_constraints:
             matched_constraints.append("catalog fit")
 
@@ -331,8 +493,14 @@ class Agent:
             reason_parts.append(f"appropriate for {state.job_level} level")
         if state.purpose:
             reason_parts.append(f"supports {state.purpose}")
+        if state.language:
+            reason_parts.append(f"available in {state.language}")
+        if state.accent:
+            reason_parts.append(f"matches accent preference {state.accent}")
         if item.duration_raw:
             reason_parts.append(f"fits duration {item.duration_raw}")
+        if matched_skills:
+            reason_parts.append(f"aligned to skills: {', '.join(matched_skills)}")
         reason = ", ".join(reason_parts) if reason_parts else "Matches the user's requested assessment criteria."
 
         confidence = "high" if len(matched_constraints) >= 2 else "medium"
@@ -341,6 +509,9 @@ class Agent:
             name=item.name,
             url=item.url,
             test_type=item.test_type_str,
+            keys=item.keys or [],
+            duration=item.duration_raw or "Not listed",
+            languages=item.languages or [],
             reason=reason,
             confidence=confidence,
             matched_constraints=matched_constraints,
@@ -350,8 +521,23 @@ class Agent:
     def _format_recommendation_reply(self, state: ConversationState, recommendations: List[Recommendation]) -> str:
         if not recommendations:
             return "I couldn't find good matches in the SHL catalog with the details provided."
+
         base = f"Based on the requested {state.job_level or 'role'} {state.role or ''}".strip()
-        return (
-            f"{base}, here are the top SHL Individual Test Solutions that fit the catalog and the stated constraints. "
-            "Each recommendation is drawn from the loaded SHL catalog only."
+        lines = [
+            f"{base}, here are the top {len(recommendations)} SHL Individual Test Solutions that fit the catalog and the stated constraints:",
+            "",
+            "| # | Name | Test Type | Keys | Duration | Languages | URL |",
+            "|---|------|-----------|------|----------|-----------|-----|",
+        ]
+        for idx, rec in enumerate(recommendations, start=1):
+            lines.append(
+                f"| {idx} | {rec.name} | {rec.test_type} | {rec.keys} | {rec.duration or 'Not listed'} | {rec.languages or 'Not listed'} | {rec.url} |"
+            )
+
+        best = recommendations[0]
+        lines.append("")
+        lines.append(
+            f"If I were to choose one, I would recommend {best.name} because {best.reason.lower()}. "
+            "It has the strongest match to the requested role and level and the clearest catalog fit among the top results."
         )
+        return "\n".join(lines)

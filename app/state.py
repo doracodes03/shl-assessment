@@ -30,6 +30,15 @@ _LANGUAGE_MAP = {
     r"\bchinese\b|\bmandarin\b": "Chinese",
 }
 
+_ACCENT_MAP = {
+    r"\b(?:us|usa|u\.s\.a?|american)\b": "US",
+    r"\b(?:uk|u\.k\.|british|english uk|english \(uk\)|english uk)\b": "UK",
+    r"\b(?:australian|australia)\b": "Australian",
+    r"\b(?:indian|india)\b": "Indian",
+    r"\b(?:canadian|canada)\b": "Canadian",
+    r"\b(?:south african|south africa)\b": "South African",
+}
+
 _ASSESSMENT_TYPE_MAP = {
     r"\b(personality|behaviour|behavior|behavioural)\b": "Personality",
     r"\b(cognitive|ability|aptitude|numerical|verbal|logical)\b": "Cognitive",
@@ -98,6 +107,15 @@ def _extract_role(text: str) -> Optional[str]:
             role = re.sub(r"\b(?:solution|solutions|battery|batteries|assessment|assessments|test|tests|role|roles|candidate|candidates|people|staff|pool)\b", "", role, flags=re.IGNORECASE)
             role = re.sub(r"\s+", " ", role).strip(" ,.;:-")
             role = re.sub(r"^(?:for|to|of)\s+", "", role, flags=re.IGNORECASE)
+            if role.lower() in {
+                "selection",
+                "development",
+                "training",
+                "recruitment",
+                "screening",
+                "hiring",
+            }:
+                return None
             if len(role) > 3:
                 return role
     return None
@@ -123,6 +141,19 @@ def _extract_language(text: str) -> Optional[str]:
     for pattern, label in _LANGUAGE_MAP.items():
         if re.search(pattern, text, re.IGNORECASE):
             return label
+    return None
+
+
+def _extract_accent(text: str) -> Optional[str]:
+    for pattern, label in _ACCENT_MAP.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return label
+    match = re.search(r"\b([A-Za-z ]+?) accent\b", text, re.IGNORECASE)
+    if match:
+        accent_text = match.group(1).strip()
+        for pattern, label in _ACCENT_MAP.items():
+            if re.search(pattern, accent_text, re.IGNORECASE):
+                return label
     return None
 
 
@@ -168,8 +199,46 @@ def _extract_remote_on_site(text: str) -> Optional[str]:
 
 
 def _extract_candidate_volume(text: str) -> Optional[str]:
+    match = re.search(
+        r"\b(\d{1,4}(?:,\d{3})?|hundreds|thousands|high-volume|large volume|batch|team|multiple candidates|volume)\b(?:\s*(?:candidate|candidates|roles|positions|people|agents|staff))?\b",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
     match = re.search(r"\b(one candidate|two candidates|three candidates|batch|team|multiple candidates|volume)\b", text, re.IGNORECASE)
-    return match.group(0).strip() if match else None
+    return match.group(1).strip() if match else None
+
+
+def _parse_item_list(text: str) -> List[str]:
+    pieces = re.split(r"\band\b|,|;|/", text, flags=re.IGNORECASE)
+    return [piece.strip(" .") for piece in pieces if piece.strip()]
+
+
+def _extract_explicit_final_list(text: str) -> List[str]:
+    patterns = [
+        r"\bfinal (?:list|shortlist|selection)\s*[:\-]?\s*(.+)$",
+        r"\bfinal list is\s*(.+)$",
+        r"\bfinal shortlist is\s*(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return [item for item in _parse_item_list(match.group(1)) if item]
+    return []
+
+
+def _extract_explicit_remove(text: str) -> List[str]:
+    match = re.search(r"\b(?:drop|remove|exclude|without|leave out|don't include|dont include)\s+([^.;]+)", text, re.IGNORECASE)
+    if match:
+        items = [item for item in _parse_item_list(match.group(1)) if item]
+        normalized = []
+        for item in items:
+            trimmed = re.sub(r"^the\s+", "", item, flags=re.IGNORECASE).strip()
+            if trimmed:
+                normalized.append(trimmed)
+        return normalized
+    return []
 
 
 def build_state(messages: List[Message]) -> ConversationState:
@@ -184,12 +253,15 @@ def build_state(messages: List[Message]) -> ConversationState:
         personality_requirement=None,
         cognitive_requirement=None,
         language=_extract_language(user_text),
+        accent=_extract_accent(user_text),
         duration_minutes=_extract_duration(user_text),
         remote_on_site=_extract_remote_on_site(user_text),
         candidate_volume=_extract_candidate_volume(user_text),
         purpose=_extract_purpose(user_text),
         comparison_request=any(re.search(pattern, user_text, re.IGNORECASE) for pattern in _COMPARISON_KEYWORDS),
         comparison_targets=_extract_comparison_targets(user_text),
+        explicit_remove=_extract_explicit_remove(user_text),
+        explicit_final_list=_extract_explicit_final_list(user_text),
         clarification_needed=False,
         clarification_prompt=None,
     )
@@ -207,12 +279,19 @@ def build_search_query(state: ConversationState, messages: List[Message]) -> str
         pieces.extend(state.assessment_types)
     if state.technical_skills:
         pieces.extend(state.technical_skills)
-    if state.purpose:
-        pieces.append(state.purpose)
     if state.language:
         pieces.append(state.language)
+    if state.accent:
+        pieces.append(state.accent)
     if state.remote_on_site:
         pieces.append(state.remote_on_site)
+    if state.candidate_volume:
+        pieces.append(state.candidate_volume)
+    if not pieces and state.purpose:
+        # Purpose terms like "selection" are useful when no role/industry or skill
+        # constraints are present, but they should not overpower a specific
+        # role/industry query such as "hiring for data science".
+        pieces.append(state.purpose)
     if not pieces:
         pieces.append(" ".join(m.content for m in messages if m.role == "user"))
     return " ".join(pieces)
