@@ -1,0 +1,67 @@
+[
+  {
+    "entity_id": "720",
+    "name": "Occupational Personality Questionnaire OPQ32r",
+    "link": "https://example.com/720",
+    "job_levels": ["Entry-Level", "Mid-Professional", "Manager"],
+    "languages": ["English"],
+    "duration_raw": "Approximate Completion Time in minutes = 25",
+    "duration": "25 minutes",
+    "remote": "yes",
+    "adaptive": "no",
+    "description": "Personality questionnaire for selection and development.",
+    "keys": ["Personality & Behavior"]
+  },
+  {
+    "entity_id": "3933",
+    "name": "Customer Service Phone Simulation",
+    "link": "https://example.com/3933",
+    "job_levels": ["Entry-Level"],
+    "languages": ["English"],
+    "duration_raw": "Approximate Completion Time in minutes = 18",
+    "duration": "18 minutes",
+    "remote": "yes",
+    "adaptive": "no",
+    "description": "Customer service phone simulation for contact center roles.",
+    "keys": ["Biodata & Situational Judgment", "Simulations"]
+  },
+  {
+    "entity_id": "2536",
+    "name": "Entry Level Customer Serv-Retail & Contact Center",
+    "link": "https://example.com/2536",
+    "job_levels": ["Entry-Level"],
+    "languages": ["English"],
+    "duration_raw": "Approximate Completion Time in minutes = 40",
+    "duration": "40 minutes",
+    "remote": "yes",
+    "adaptive": "no",
+    "description": "Entry-level customer service assessment for retail and contact center hiring.",
+    "keys": ["Assessment Exercises"]
+  },
+  {
+    "entity_id": "5678",
+    "name": "Java Developer Programming Knowledge Test",
+    "link": "https://example.com/5678",
+    "job_levels": ["Mid-Professional", "Manager"],
+    "languages": ["English"],
+    "duration_raw": "Approximate Completion Time in minutes = 30",
+    "duration": "30 minutes",
+    "remote": "yes",
+    "adaptive": "yes",
+    "description": "Java programming knowledge assessment for developers.",
+    "keys": ["Knowledge & Skills"]
+  },
+  {
+    "entity_id": "8888",
+    "name": "Customer Service Phone Solution",
+    "link": "https://example.com/8888",
+    "job_levels": ["Entry-Level"],
+    "languages": ["English"],
+    "duration_raw": "Approximate Completion Time in minutes = 60",
+    "duration": "60 minutes",
+    "remote": "yes",
+    "adaptive": "no",
+    "description": "Packaged customer service solution for hiring teams.",
+    "keys": ["Assessment Exercises"]
+  }
+]
